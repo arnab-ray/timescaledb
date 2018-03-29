@@ -60,6 +60,8 @@ set(HEADERS
   parse_rewrite.h
   partitioning.h
   planner_utils.h
+  planner_import.h
+  plan_add_hashagg.h
   process_utility.h
   scanner.h
   subspace_store.h
@@ -99,7 +101,9 @@ set(SOURCES
   parse_rewrite.c
   partitioning.c
   planner.c
+  plan_add_hashagg.c
   planner_utils.c
+  planner_import.c
   process_utility.c
   scanner.c
   sort_transform.c

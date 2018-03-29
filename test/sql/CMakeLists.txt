@@ -33,6 +33,7 @@ set(TEST_FILES
   partitioning.sql
   pg_dump.sql
   plain.sql
+  plan_hashagg_results_x_diff.sql
   reindex.sql
   relocate_extension.sql
   reloptions.sql
@@ -58,7 +59,10 @@ ENDIF(CMAKE_BUILD_TYPE MATCHES Debug)
 
 set(TEST_TEMPLATES
   parallel.sql.in
-  partitioning.sql.in)
+  partitioning.sql.in
+  #hashagg is different in 9.6 and 10 because of hashagg parallelism
+  plan_hashagg_optimized.sql.in
+  )
 
 # Regression tests that vary with PostgreSQL version. Generated test
 # files are put in the original source directory since all tests must

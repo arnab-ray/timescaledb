@@ -1,13 +1,19 @@
 #include <postgres.h>
 #include <nodes/plannodes.h>
+#include <nodes/relation.h>
 #include <parser/parsetree.h>
 #include <optimizer/clauses.h>
 #include <optimizer/planner.h>
 #include <optimizer/pathnode.h>
 #include <optimizer/paths.h>
+#include <optimizer/tlist.h>
 #include <catalog/namespace.h>
 #include <utils/guc.h>
 #include <miscadmin.h>
+#include <executor/nodeAgg.h>
+#include <utils/timestamp.h>
+#include <utils/lsyscache.h>
+#include <utils/selfuncs.h>
 
 #include "compat-msvc-enter.h"
 #include <optimizer/cost.h>
@@ -22,12 +28,14 @@
 #include "planner_utils.h"
 #include "hypertable_insert.h"
 #include "constraint_aware_append.h"
+#include "plan_add_hashagg.h"
 
 void		_planner_init(void);
 void		_planner_fini(void);
 
 static planner_hook_type prev_planner_hook;
 static set_rel_pathlist_hook_type prev_set_rel_pathlist_hook;
+static create_upper_paths_hook_type prev_create_upper_paths_hook;
 
 typedef struct ModifyTableWalkerCtx
 {
@@ -323,6 +331,47 @@ out_release:
 	cache_release(hcache);
 }
 
+static
+void
+timescale_create_upper_paths_hook(PlannerInfo *root,
+								  UpperRelationKind stage,
+								  RelOptInfo *input_rel,
+								  RelOptInfo *output_rel)
+{
+	RangeTblEntry *rte;
+	Hypertable *ht;
+	Cache	   *hcache;
+
+	if (prev_create_upper_paths_hook != NULL)
+		prev_create_upper_paths_hook(root, stage, input_rel, output_rel);
+
+	if (!extension_is_loaded() ||
+		guc_disable_optimizations ||
+		input_rel == NULL ||
+		IS_DUMMY_REL(input_rel) ||
+		input_rel->relid == 0)
+		return;
+
+	rte = planner_rt_fetch(input_rel->relid, root);
+
+	/* quick abort if only optimizing hypertables */
+	if (!guc_optimize_non_hypertables && !(is_append_parent(input_rel, rte) || is_append_child(input_rel, rte)))
+		return;
+
+	hcache = hypertable_cache_pin();
+	ht = hypertable_cache_get_entry(hcache, rte->relid);
+
+	if (!should_optimize_query(ht))
+		goto upper_path_release;
+
+	if (UPPERREL_GROUP_AGG == stage)
+		plan_add_hashagg(root, input_rel, output_rel);
+
+upper_path_release:
+	cache_release(hcache);
+}
+
+
 void
 _planner_init(void)
 {
@@ -330,6 +379,8 @@ _planner_init(void)
 	planner_hook = timescaledb_planner;
 	prev_set_rel_pathlist_hook = set_rel_pathlist_hook;
 	set_rel_pathlist_hook = timescaledb_set_rel_pathlist;
+	prev_create_upper_paths_hook = create_upper_paths_hook;
+	create_upper_paths_hook = timescale_create_upper_paths_hook;
 }
 
 void
@@ -337,4 +388,5 @@ _planner_fini(void)
 {
 	planner_hook = prev_planner_hook;
 	set_rel_pathlist_hook = prev_set_rel_pathlist_hook;
+	create_upper_paths_hook = prev_create_upper_paths_hook;
 }
