@@ -762,7 +762,7 @@ chunk_is_complete(ChunkScanCtx *scanctx, Chunk *chunk)
 	if (scanctx->space->num_dimensions != chunk->constraints->num_dimension_constraints)
 		return false;
 
-	scanctx->data = chunk;
+	scanctx->data = lappend(scanctx->data, chunk);
 	return true;
 }
 
@@ -772,9 +772,22 @@ chunk_is_complete(ChunkScanCtx *scanctx, Chunk *chunk)
 static Chunk *
 chunk_scan_ctx_get_chunk(ChunkScanCtx *ctx)
 {
-	ctx->data = NULL;
+	ctx->data = NIL;
 
 	chunk_scan_ctx_foreach_chunk(ctx, chunk_is_complete, 1);
+
+	return (ctx->data == NIL ? NULL : linitial(ctx->data));
+}
+
+/* Finds the first chunk that has a complete set of constraints. There should be
+ * only one such chunk in the scan context when scanning for the chunk that
+ * holds a particular tuple/point. */
+static List *
+chunk_scan_ctx_get_chunk_list(ChunkScanCtx *ctx)
+{
+	ctx->data = NIL;
+
+	chunk_scan_ctx_foreach_chunk(ctx, chunk_is_complete, 0);
 
 	return ctx->data;
 }
@@ -835,6 +848,54 @@ chunk_find(Hyperspace *hs, Point *p)
 	}
 
 	return chunk;
+}
+
+List *
+chunk_find_all_oids(Hyperspace *hs, List *dimension_vecs, LOCKMODE lockmode)
+{
+	List	   *chunk_list,
+			   *oid_list;
+	ChunkScanCtx ctx;
+	ListCell   *lc;
+
+	/* The scan context will keep the state accumulated during the scan */
+	chunk_scan_ctx_init(&ctx, hs, NULL);
+
+	/* Abort the scan when the chunk is found */
+	ctx.early_abort = false;
+
+
+	/* Scan all dimensions for slices enclosing the point */
+
+	foreach(lc, dimension_vecs)
+	{
+		DimensionVec *vec = lfirst(lc);
+
+		dimension_slice_and_chunk_constraint_join(&ctx, vec);
+	}
+
+	/* Find the chunk that has N matching dimension constraints */
+	chunk_list = chunk_scan_ctx_get_chunk_list(&ctx);
+
+	chunk_scan_ctx_destroy(&ctx);
+
+	oid_list = NIL;
+	foreach(lc, chunk_list)
+	{
+		Chunk	   *chunk = lfirst(lc);
+
+		/* Fill in the rest of the chunk's data from the chunk table */
+		chunk_fill_stub(chunk, false);
+
+		/* chunk constraints left unfilled */
+
+		if (lockmode != NoLock)
+			LockRelationOid(chunk->table_id, lockmode);
+
+		oid_list = lappend_oid(oid_list, chunk->table_id);
+	}
+
+	return oid_list;
 }
 
 Chunk *
